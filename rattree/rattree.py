@@ -61,12 +61,26 @@ row 4 = [9, 0, 1]
                             
 
 """
+# This file is part of RATTree
+# Copyright (C) 2020  Sam Gillingham
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import time
 from collections import OrderedDict
 import numpy
+import numba
 from numba import njit
-from numba import uint32, deferred_type, optional, jitclass
 try:
     # support older versions of numba
     from numba.experimental import jitclass
@@ -74,17 +88,24 @@ except ImportError:
     from numba import jitclass
 from numba.typed import List
 
-node_type = deferred_type()
+# Tell Numba we will define this type later
+# this is to work around circular reference - LinkedNode
+# points to itself
+node_type = numba.deferred_type()
 
-spec = OrderedDict()
-spec['row'] = uint32
-spec['imgval'] = uint32
-spec['next'] = optional(node_type)
-spec['child'] = optional(node_type)
+# Specify the types of the attributes in LinkedNode
+node_spec = OrderedDict()
+node_spec['row'] = numba.uint32 # 0 unless a leaf node
+node_spec['imgval'] = numba.uint32 # value taken from input image that will be written to RAT
+node_spec['next'] = numba.optional(node_type)   # sibling node. None if last sibling
+node_spec['child'] = numba.optional(node_type)  # pointer to next level of the tree for this combo of values
 
-
-@jitclass(spec)
+@jitclass(node_spec)
 class LinkedNode(object):
+    """
+    Main object in this module. Is an element in the tree.
+    See node_spec for description of attributes. 
+    """
     def __init__(self, imgval, next):
         self.row = 0
         self.imgval = imgval
@@ -92,72 +113,117 @@ class LinkedNode(object):
         self.child = None
 
     def insert(self, imgval):
+        # inserts a new node (with given imgval) as a sibling
+        # straight after this node in the list.
         newnode = LinkedNode(imgval, self.next)
         self.next = newnode
         return newnode
         
     def setChild(self, child):
+        # given a new LinkedNode insert this as a child node
+        # to this node. 
         self.child = child
         
     def setRow(self, row):
+        # is a leaf node (row should be != 0)
         self.row = row
 
     def adddata(self, data, currow):
+        # Given an array of image values (data) and the current row number
+        # we are up to add this to the tree 
+        # returns tuple with new current row and row number for the data
+        # these may be different when the data is already in the tree.
         return adddata_tonode(self, data, currow)
+
+# now we have the full definition of the class we can set as the type.
+node_type.define(LinkedNode.class_type.instance_type)
         
-
-@njit
-def make_linked_node(imgval):
-    return LinkedNode(imgval, None)
-
 @njit
 def adddata_tonode(node, data, currow):
+    """
+    Numba does support static class members, but for some reason these don't
+    work with recursion. So we have this as a module level function that
+    does seem fine with recursion. 
+    
+    This function takes an existing node in the tree, and tries to add the
+    elements in data to it. For each level in the tree it tries to find a sibling
+    that matches the first element in data. If it finds one and the node is a 
+    leaf node then it returns the row for that node. Otherwise it attempts to
+    add the next element in data as a child to the existing node using recursion.
+    
+    If the first element in data was not found, then it is added as a sibling to
+    the current node. The remaining elements in data are then added as children
+    and currow is then set as the row of the leaf element. Currow is incremented
+    before being returned.
+    
+    This function returns and (possibly) updated value of currow, and the row
+    of the data (which maybe new, or the value of a row already added to the
+    tree if data as been added before).
+    """
     sibling = node
     while sibling is not None:
+        # process this and all siblings
         if sibling.imgval == data[0]:
+            # matching value found
             if sibling.row != 0:
+                # is leaf node, return this row
                 return currow, sibling.row
 
+            # process child with remaining data elements
             currow, row = adddata_tonode(sibling.child, data[1:], currow)
             return currow, row
 
+        # go to next sibling
         sibling = sibling.next
 
     # got here, not one of the siblings, add it
     newsibling = node.insert(data[0])
     child = newsibling
+    # now go through and add the remaining data elements all as children
+    # to this node
     for n in range(1, data.shape[0]):
         newchild = LinkedNode(data[n], None)
         child.setChild(newchild)
         child = newchild
+    # set row for leaf node
     child.setRow(currow)
     row = currow
+    # update currow
     currow += 1
 
     return currow, row
 
-node_type.define(LinkedNode.class_type.instance_type)
+# specify the types of the attributes of RATTree
+tree_spec = OrderedDict()
+tree_spec['currow'] = numba.uint32  # value of the row that will be added next
+tree_spec['head'] = numba.optional(node_type) # first node in the tree
+tree_spec['ncols'] = numba.uint32   # number of columns in the RAT (same as number of input images)
 
-treespec = OrderedDict()
-treespec['currow'] = uint32
-treespec['head'] = optional(node_type)
-treespec['ncols'] = uint32
-
-@jitclass(treespec)
+@jitclass(tree_spec)
 class RATTree(object):
+    """
+    Class that represents a tree. Holds pointer to first node in the tree.
+    Also keeps track of the number of the next row to be added.
+    """
     def __init__(self):
         self.currow = 1
         self.head = None
         self.ncols = 0
         
     def adddata(self, data):
+        """
+        Add an array of image values to the tree. Return the row
+        these values will have in the final RAT.
+        """
         if self.head is None:
             # new tree
             self.ncols = data.shape[0]
-            self.head = make_linked_node(data[0])
+            # add first element as head. 
+            self.head = LinkedNode(data[0], None)
             child = self.head
+            # remaining elements as children
             for n in range(1, data.shape[0]):
-                newchild = make_linked_node(data[n])
+                newchild = LinkedNode(data[n], None)
                 child.setChild(newchild)
                 child = newchild
 
@@ -169,17 +235,45 @@ class RATTree(object):
             if data.shape[0] != self.ncols:
                 raise ValueError('inconsistent number of columns')
         
+            # otherwise try and add this to the exiting tree
             self.currow, row = self.head.adddata(data, self.currow)
         
         return row
         
+    def addfromRIOS(self, block):
+        """
+        When passed a (nlayers, ysize, xsize) shape block from RIOS, add 
+        all the values to the tree.
+        """
+        nlayers, ysize, xsize = block.shape
+        # you might think it would be faster to transpose() the data
+        # so we can tightloop the nlayers, but it ends up being slower
+        # overall...
+        
+        data = numpy.empty((nlayers,), dtype=numpy.uint32)
+        output = numpy.empty((1, ysize, xsize), dtype=numpy.uint32)
+        
+        for y in range(ysize):
+            for x in range(xsize):
+                for n in range(nlayers):
+                    data[n] = block[n, y, x]
+                output[0, y, x] = self.adddata(data)
+                
+        return output
+        
     def dump(self):
+        """
+        For debugging. Dump the tree in a readable format.
+        """
         data = numpy.empty((self.ncols,), dtype=numpy.uint32)
         idx = 0
         dumprow(self.head, data, idx)
         
     def dumprat(self):
-        # for speed
+        """
+        Return a RAT built from the tree. Shape is (rows, cols).
+        """
+        # for speed use this shape as we are looping over columns tightly
         rat = numpy.empty((self.currow, self.ncols), dtype=numpy.uint32)
         rat[0] = 0
         data = numpy.empty((self.ncols,), dtype=numpy.uint32)
@@ -189,8 +283,14 @@ class RATTree(object):
 
 @njit
 def dumprow(node, data, idx):
+    """
+    See comments above about recursion and static class functions.
+    node is the current node to process, data is an array that is populated
+    with values for the current row and idx is the index into data for
+    the current level of the tree being processed
+    """
     if node.row != 0:
-        # leaf nodes
+        # leaf nodes. Print out all siblings with the contents of data
         next = node
         while next is not None:
             data[idx] = next.imgval
@@ -201,18 +301,26 @@ def dumprow(node, data, idx):
         # any siblings
         next = node.next
         while next is not None:
+            # process this sibling
             dumprow(next, data, idx)
             next = next.next
             
-        # process child of this
+        # process child of this node at next location in data
         data[idx] = node.imgval
         idx += 1
         dumprow(node.child, data, idx)
 
 @njit
 def dumprowtorat(node, col, data, rat):
+    """
+    See comments above about recursion and static class functions.
+    node is the current node to process, data is an array that is populated
+    with values for the current row, col is the index into data for
+    the current level of the tree being processed and rat is the RAT that
+    is populated with each row found.
+    """
     if node.row != 0:
-        # leaf nodes
+        # leaf nodes. Set output row in the RAT for each sibling
         next = node
         while next is not None:
             data[col] = next.imgval
@@ -225,17 +333,20 @@ def dumprowtorat(node, col, data, rat):
         # any siblings
         next = node.next
         while next is not None:
+            # process this sibling
             dumprowtorat(next, col, data, rat)
             next = next.next
             
-        # process child of this
+        # process child of this at next location in data
         data[col] = node.imgval
         col += 1
-        #print('imgval', head.imgval, 'has child', head.child is not None, 'has next', head.next is not None)
         dumprowtorat(node.child, col, data, rat)
         
 @njit
 def main():
+    """
+    Basic test code
+    """
     tree = RATTree()
     row = tree.adddata(numpy.array([5, 3, 9]))
     print(row)
@@ -257,6 +368,9 @@ def main():
     
 @njit
 def mainStressTest():
+    """
+    Try adding 1million rows and see how fast this is.
+    """
     tree = RATTree()
     for n in range(1000000):
         data = numpy.random.randint(0, 5, 10)
@@ -265,11 +379,29 @@ def mainStressTest():
     print(tree.currow)
     rat = tree.dumprat()
     
-
+def mainRIOSTest():
+    """
+    Simple test for RIOS interface
+    """
+    tree = RATTree()
+    block = numpy.random.randint(0, 10, (10, 256, 256), 
+                dtype=numpy.uint32)
+    
+    result = tree.addfromRIOS(block)
+    print(result)
+    
+    
 if __name__ == '__main__':
-    #main()
+    import time
+    main()
+    
     a = time.time()
-    mainStressTest()
+    mainRIOSTest()
     b = time.time()
     print(b - a)
+    
+    #a = time.time()
+    #mainStressTest()
+    #b = time.time()
+    #print(b - a)
     
