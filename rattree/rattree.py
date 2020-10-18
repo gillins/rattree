@@ -86,7 +86,6 @@ try:
     from numba.experimental import jitclass
 except ImportError:
     from numba import jitclass
-from numba.typed import List
 
 # Tell Numba we will define this type later
 # this is to work around circular reference - LinkedNode
@@ -265,7 +264,8 @@ class RATTree(object):
         """
         For debugging. Dump the tree in a readable format.
         """
-        data = numpy.empty((self.ncols,), dtype=numpy.uint32)
+        # note i64 cast for older numba...
+        data = numpy.empty((numpy.int64(self.ncols),), dtype=numpy.uint32)
         idx = 0
         dumprow(self.head, data, idx)
         
@@ -274,9 +274,11 @@ class RATTree(object):
         Return a RAT built from the tree. Shape is (rows, cols).
         """
         # for speed use this shape as we are looping over columns tightly
-        rat = numpy.empty((self.currow, self.ncols), dtype=numpy.uint32)
+        # note i64 cast for older numba...
+        rat = numpy.empty((numpy.int64(self.currow), 
+                        numpy.int64(self.ncols)), dtype=numpy.uint32)
         rat[0] = 0
-        data = numpy.empty((self.ncols,), dtype=numpy.uint32)
+        data = numpy.empty((numpy.int64(self.ncols),), dtype=numpy.uint32)
         col = 0
         dumprowtorat(self.head, col, data, rat)
         return rat

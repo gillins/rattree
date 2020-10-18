@@ -2,6 +2,7 @@
 
 from __future__ import print_function, division
 
+import io
 import sys
 import csv
 import argparse
@@ -45,7 +46,8 @@ def readCSV(inputs):
     filenames = []
     columnNames = []
 
-    with open(inputs, newline='') as f:
+    # use io.open as this has the newline param on python 2 and 3
+    with io.open(inputs, newline='') as f:
         reader = csv.reader(f)
         for row in reader:
             filenames.append(row[0])
