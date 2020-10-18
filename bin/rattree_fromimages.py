@@ -79,19 +79,22 @@ def main(cmdargs):
     outputs.output = cmdargs.output
     
     controls = applier.ApplierControls()
-    controls.setProgress(GDALProgressBar())
+    progress = GDALProgressBar()
+    controls.setProgress(progress)
     controls.setThematic(True)
     controls.setOutputDriverName(cmdargs.format)
     
     applier.apply(buildImageAndTree, inputs, outputs, otherargs, 
                         controls=controls)
                         
+    print()
+    print('rows', otherargs.tree.currow)
     print('building rat')
     outputRAT = otherargs.tree.dumprat()
-    print(outputRAT.shape)
                         
+    print()
     print('writing rat')
-    ds = gdal.Open(cmdargs.output)
+    ds = gdal.Open(cmdargs.output, gdal.GA_Update)
     for idx, colName in enumerate(columnNames):
         rat.writeColumn(ds, colName, outputRAT[..., idx], 
                             colType=gdal.GFT_Integer)
