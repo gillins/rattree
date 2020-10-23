@@ -239,8 +239,8 @@ class RATTree(object):
             self.head = LinkedNode(data[0], None)
             child = self.head
             # remaining elements as children
-            for n in range(1, data.shape[0]):
-                newchild = LinkedNode(data[n], None)
+            for idx in range(1, data.shape[0]):
+                newchild = LinkedNode(data[idx], None)
                 child.setChild(newchild)
                 child = newchild
 
@@ -254,9 +254,9 @@ class RATTree(object):
                         numpy.int64(self.ncols)), dtype=numpy.uint32)
             
             # first and second row
-            for n in range(self.ncols):
-                self.rat[0, n] = 0 # first row all zeros
-                self.rat[row, n] = data[n] # first row of actual rat (row=1)
+            for idx2 in range(self.ncols):
+                self.rat[0, idx2] = 0 # first row all zeros
+                self.rat[row, idx2] = data[idx2] # first row of actual rat (row=1)
             
         else:
             if data.shape[0] != self.ncols:
