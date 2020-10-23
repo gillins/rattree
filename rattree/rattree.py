@@ -49,10 +49,12 @@ head --> imgval=5 ---> imgval=3 ---> imgval=9, row=1
             |                        imgval=7, row=3
             |
          imgval=9 ---> imgval=0 ---> imgval=1, row=4
-         
-The last step is to convert the tree back into a RAT. The tree is traversed and
-when a leaf node is found, the various image values for that path through the
-tree are copied into the row of the output row as specified by that leaf node:
+ 
+For speed, the RAT is filled in for the new row when a new leaf is created. 
+This ended up being much faster (10x) than traversing the tree later to build the 
+RAT. The downside is that we don't know the size of the RAT so the RAT
+is periodically grown by the size given by RAT_GROW_SIZE, and truncated
+by RATTree.dumprat()
 
 row 1 = [5, 3, 9]
 row 2 = [5, 4, 8]
@@ -135,6 +137,8 @@ class LinkedNode(object):
         # we are up to add this to the tree 
         # returns tuple with new current row and row number for the data
         # these may be different when the data is already in the tree.
+        # also passed the RAT which is filled in. Up to caller to ensure RAT
+        # is large enough to handle the data.
         idx = 0
         return adddata_tonode(self, data, idx, currow, rat)
 
@@ -153,6 +157,10 @@ def adddata_tonode(node, data, idx, currow, rat):
     that matches the first element in data. If it finds one and the node is a 
     leaf node then it returns the row for that node. Otherwise it attempts to
     add the next element in data as a child to the existing node using recursion.
+    
+    idx is the current into data that we are processing.
+    
+    rat is the RAT to update as we go. Caller must ensure this is large enough.
     
     If the first element in data was not found, then it is added as a sibling to
     the current node. The remaining elements in data are then added as children
@@ -241,13 +249,14 @@ class RATTree(object):
             self.currow += 1
             
             # create RAT
+            # note i64 cast for older numba...
             self.rat = numpy.empty((numpy.int64(RAT_GROW_SIZE), 
                         numpy.int64(self.ncols)), dtype=numpy.uint32)
-            self.rat[0] = 0
             
-            # first row
+            # first and second row
             for n in range(self.ncols):
-                self.rat[row, n] = data[n]
+                self.rat[0, n] = 0 # first row all zeros
+                self.rat[row, n] = data[n] # first row of actual rat (row=1)
             
         else:
             if data.shape[0] != self.ncols:
@@ -257,7 +266,7 @@ class RATTree(object):
             self.currow, row = self.head.adddata(data, self.currow, self.rat)
             
             if self.currow >= self.rat.shape[0]:
-                print('growing RAT')
+                #print('growing RAT')
                 newRAT = numpy.empty((numpy.int64(self.rat.shape[0] + RAT_GROW_SIZE), 
                         numpy.int64(self.ncols)), dtype=numpy.uint32)
                 for n in range(self.currow):
@@ -299,16 +308,9 @@ class RATTree(object):
         
     def dumprat(self):
         """
-        Return a RAT built from the tree. Shape is (rows, cols).
+        Return the RAT built from the tree. Shape is (rows, cols).
+        Truncates to the used space of the RAT.
         """
-        # for speed use this shape as we are looping over columns tightly
-        # note i64 cast for older numba...
-        #rat = numpy.empty((numpy.int64(self.currow), 
-        #                numpy.int64(self.ncols)), dtype=numpy.uint32)
-        #rat[0] = 0
-        #data = numpy.empty((numpy.int64(self.ncols),), dtype=numpy.uint32)
-        #col = 0
-        #dumprowtorat(self.head, col, data, rat)
         return self.rat[:self.currow]
 
 @njit
@@ -340,38 +342,6 @@ def dumprow(node, data, idx):
         idx += 1
         dumprow(node.child, data, idx)
 
-@njit
-def dumprowtorat(node, col, data, rat):
-    """
-    See comments above about recursion and static class functions.
-    node is the current node to process, data is an array that is populated
-    with values for the current row, col is the index into data for
-    the current level of the tree being processed and rat is the RAT that
-    is populated with each row found.
-    """
-    if node.row != 0:
-        # leaf nodes. Set output row in the RAT for each sibling
-        next = node
-        while next is not None:
-            data[col] = next.imgval
-            # loop for speed
-            for n in range(data.shape[0]):
-                rat[next.row, n] = data[n]
-            next = next.next
-        
-    else:
-        # any siblings
-        next = node.next
-        while next is not None:
-            # process this sibling
-            dumprowtorat(next, col, data, rat)
-            next = next.next
-            
-        # process child of this at next location in data
-        data[col] = node.imgval
-        col += 1
-        dumprowtorat(node.child, col, data, rat)
-        
 @njit
 def main():
     """

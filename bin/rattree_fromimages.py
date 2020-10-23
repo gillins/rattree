@@ -106,8 +106,7 @@ def main(cmdargs):
                         controls=controls)
                         
     print()
-    print('rows', otherargs.tree.currow)
-    print('building rat')
+    print('rows', otherargs.tree.currow - 1)
     outputRAT = otherargs.tree.dumprat()
                         
     print()
