@@ -86,6 +86,9 @@ try:
     from numba.experimental import jitclass
 except ImportError:
     from numba import jitclass
+    
+"Initial size of the RAT and size to grow it as"
+RAT_GROW_SIZE = 2**19 # ~500k
 
 # Tell Numba we will define this type later
 # this is to work around circular reference - LinkedNode
@@ -127,18 +130,19 @@ class LinkedNode(object):
         # is a leaf node (row should be != 0)
         self.row = row
 
-    def adddata(self, data, currow):
+    def adddata(self, data, currow, rat):
         # Given an array of image values (data) and the current row number
         # we are up to add this to the tree 
         # returns tuple with new current row and row number for the data
         # these may be different when the data is already in the tree.
-        return adddata_tonode(self, data, currow)
+        idx = 0
+        return adddata_tonode(self, data, idx, currow, rat)
 
 # now we have the full definition of the class we can set as the type.
 node_type.define(LinkedNode.class_type.instance_type)
         
 @njit
-def adddata_tonode(node, data, currow):
+def adddata_tonode(node, data, idx, currow, rat):
     """
     Numba does support static class members, but for some reason these don't
     work with recursion. So we have this as a module level function that
@@ -162,30 +166,34 @@ def adddata_tonode(node, data, currow):
     sibling = node
     while sibling is not None:
         # process this and all siblings
-        if sibling.imgval == data[0]:
+        if sibling.imgval == data[idx]:
             # matching value found
             if sibling.row != 0:
                 # is leaf node, return this row
                 return currow, sibling.row
 
             # process child with remaining data elements
-            currow, row = adddata_tonode(sibling.child, data[1:], currow)
+            currow, row = adddata_tonode(sibling.child, data, idx+1, currow, rat)
             return currow, row
 
         # go to next sibling
         sibling = sibling.next
 
     # got here, not one of the siblings, add it
-    newsibling = node.insert(data[0])
+    newsibling = node.insert(data[idx])
     child = newsibling
     # now go through and add the remaining data elements all as children
     # to this node
-    for n in range(1, data.shape[0]):
+    for n in range(idx+1, data.shape[0]):
         newchild = LinkedNode(data[n], None)
         child.setChild(newchild)
         child = newchild
     # set row for leaf node
     child.setRow(currow)
+    # copy into rat
+    for n in range(data.shape[0]):
+        rat[currow, n] = data[n]
+    
     row = currow
     # update currow
     currow += 1
@@ -197,6 +205,7 @@ tree_spec = OrderedDict()
 tree_spec['currow'] = numba.uint32  # value of the row that will be added next
 tree_spec['head'] = numba.optional(node_type) # first node in the tree
 tree_spec['ncols'] = numba.uint32   # number of columns in the RAT (same as number of input images)
+tree_spec['rat'] = numba.optional(numba.uint32[:,:])  # RAT as it is being built (rows, cols)
 
 @jitclass(tree_spec)
 class RATTree(object):
@@ -208,6 +217,7 @@ class RATTree(object):
         self.currow = 1
         self.head = None
         self.ncols = 0
+        self.rat = None
         
     def adddata(self, data):
         """
@@ -230,12 +240,30 @@ class RATTree(object):
             child.setRow(self.currow)
             self.currow += 1
             
+            # create RAT
+            self.rat = numpy.empty((numpy.int64(RAT_GROW_SIZE), 
+                        numpy.int64(self.ncols)), dtype=numpy.uint32)
+            self.rat[0] = 0
+            
+            # first row
+            for n in range(self.ncols):
+                self.rat[row, n] = data[n]
+            
         else:
             if data.shape[0] != self.ncols:
                 raise ValueError('inconsistent number of columns')
         
             # otherwise try and add this to the exiting tree
-            self.currow, row = self.head.adddata(data, self.currow)
+            self.currow, row = self.head.adddata(data, self.currow, self.rat)
+            
+            if self.currow >= self.rat.shape[0]:
+                print('growing RAT')
+                newRAT = numpy.empty((numpy.int64(self.rat.shape[0] + RAT_GROW_SIZE), 
+                        numpy.int64(self.ncols)), dtype=numpy.uint32)
+                for n in range(self.currow):
+                    for j in range(self.ncols):
+                        newRAT[n, j] = self.rat[n, j]
+                self.rat = newRAT
         
         return row
         
@@ -275,13 +303,13 @@ class RATTree(object):
         """
         # for speed use this shape as we are looping over columns tightly
         # note i64 cast for older numba...
-        rat = numpy.empty((numpy.int64(self.currow), 
-                        numpy.int64(self.ncols)), dtype=numpy.uint32)
-        rat[0] = 0
-        data = numpy.empty((numpy.int64(self.ncols),), dtype=numpy.uint32)
-        col = 0
-        dumprowtorat(self.head, col, data, rat)
-        return rat
+        #rat = numpy.empty((numpy.int64(self.currow), 
+        #                numpy.int64(self.ncols)), dtype=numpy.uint32)
+        #rat[0] = 0
+        #data = numpy.empty((numpy.int64(self.ncols),), dtype=numpy.uint32)
+        #col = 0
+        #dumprowtorat(self.head, col, data, rat)
+        return self.rat[:self.currow]
 
 @njit
 def dumprow(node, data, idx):
