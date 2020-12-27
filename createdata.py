@@ -6,8 +6,8 @@ from osgeo import gdal
 IMG_XSIZE = 2000
 IMG_YSIZE = 2000
 IMG_NUM = 3
-IMG_MIN = 0
-IMG_MAX = 5
+IMG_MIN = 1
+IMG_MAX = 9
 
 def main():
 

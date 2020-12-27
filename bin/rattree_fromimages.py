@@ -53,6 +53,9 @@ def get_cmdargs():
             help="Use GDAL to calculate Histogram and statistics. " +
                 "Default is to use histogram from the RAT and estimate " +
                 "statistics from that.")
+    parser.add_argument("-n", "--nocolourtable", default=False,
+            action="store_true",
+            help="Don't write a random colour table to the file")
     
     args = parser.parse_args()
     if args.inputs is None or args.output is None:
@@ -186,6 +189,11 @@ def main(cmdargs):
         calcstats.addPyramid(ds, progress)
         
     # else stats/pyramids are handled by RIOS calcstats
+    
+    # colour table if requested
+    if not cmdargs.nocolourtable:
+        ct = rat.genColorTable_random(outputRAT.shape[0])
+        rat.setColorTable(ds, ct)
 
     # now all the rat columns
     for idx, colName in enumerate(columnNames):
