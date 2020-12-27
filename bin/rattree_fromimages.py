@@ -27,6 +27,7 @@ from osgeo import gdal
 from rios import applier
 from rios import rat
 from rios import calcstats
+from rios.imageio import GDALTypeToNumpyType
 from rios.fileinfo import ImageInfo
 from rios.cuiprogress import GDALProgressBar
 
@@ -145,10 +146,18 @@ def main(cmdargs):
         val = info.nodataval[0]
         if val is None:
             raise SystemExit("No data values must be set on inputs")
+            
+        # now convert to the type of the image so we 
+        # are doing comparisons on the same type
+        numpyType = GDALTypeToNumpyType(info.dataType)
+        val = numpyType(val)
+            
         nodatas.append(val)
     
     otherargs = applier.OtherInputs()
     otherargs.tree = RATTree()
+    # this will convert to the 'smallest' type that holds all the data types
+    # - hopefully they all the same
     otherargs.nodatas = numpy.array(nodatas)
     
     inputs = applier.FilenameAssociations()
