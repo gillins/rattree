@@ -216,6 +216,7 @@ tree_spec['currow'] = numba.uint32  # value of the row that will be added next
 tree_spec['head'] = numba.optional(node_type) # first node in the tree
 tree_spec['ncols'] = numba.uint32   # number of columns in the RAT (same as number of input images)
 tree_spec['rat'] = numba.optional(numba.uint32[:,:])  # RAT as it is being built (rows, cols)
+tree_spec['histo'] = numba.optional(numba.uint32[:])  # Histogram as it is bring built (rows)
 
 @jitclass(tree_spec)
 class RATTree(object):
@@ -228,6 +229,7 @@ class RATTree(object):
         self.head = None
         self.ncols = 0
         self.rat = None
+        self.histo = None
         
     def adddata(self, data):
         """
@@ -254,6 +256,10 @@ class RATTree(object):
             # note i64 cast for older numba...
             self.rat = numpy.empty((numpy.int64(RAT_GROW_SIZE), 
                         numpy.int64(self.ncols)), dtype=numpy.uint32)
+                        
+            # create histogram
+            self.histo = numpy.zeros((numpy.int64(RAT_GROW_SIZE),), 
+                                dtype=numpy.uint32)
             
             # first and second row
             for idx2 in range(self.ncols):
@@ -275,13 +281,27 @@ class RATTree(object):
                     for j in range(self.ncols):
                         newRAT[n, j] = self.rat[n, j]
                 self.rat = newRAT
+                
+                # new histo
+                newHisto = numpy.zeros((numpy.int64(self.histo.shape[0] + RAT_GROW_SIZE),),
+                                        dtype=numpy.uint32)
+                for n in range(self.currow):
+                    newHisto[n] = self.histo[n]
+                self.histo = newHisto
+                
+        # update histo
+        self.histo[row] += 1
         
         return row
         
-    def addfromRIOS(self, block):
+    def addfromRIOS(self, block, nodatas):
         """
         When passed a (nlayers, ysize, xsize) shape block from RIOS, add 
         all the values to the tree.
+        
+        nodatas should be a 1d array of the nodata values - same length
+        as the number. If the data for any of the layers matches the 
+        corresponding nodata the pixel is ignored.
         """
         nlayers, ysize, xsize = block.shape
         # you might think it would be faster to transpose() the data
@@ -291,11 +311,21 @@ class RATTree(object):
         data = numpy.empty((nlayers,), dtype=numpy.uint32)
         output = numpy.empty((1, ysize, xsize), dtype=numpy.uint32)
         
+        allok = True
         for y in range(ysize):
             for x in range(xsize):
                 for n in range(nlayers):
-                    data[n] = block[n, y, x]
-                output[0, y, x] = self.adddata(data)
+                    val = block[n, y, x]
+                    if val == nodatas[n]:
+                        allok = False
+                        break
+                    data[n] = val
+                    
+                if allok:
+                    output[0, y, x] = self.adddata(data)
+                else:
+                    output[0, y, x] = 0
+                    self.histo[0] += 1
                 
         return output
         
@@ -314,6 +344,15 @@ class RATTree(object):
         Truncates to the used space of the RAT.
         """
         return self.rat[:self.currow]
+        
+    def dumphist(self):
+        """
+        Return the Histogram built from the tree.
+        Truncates to the used space of the histogram
+        """
+        # we ignore the first value (which is the nodata)
+        self.histo[0] = 0
+        return self.histo[:self.currow]
 
 @njit
 def dumprow(node, data, idx):

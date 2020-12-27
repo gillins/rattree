@@ -26,6 +26,8 @@ import numpy
 from osgeo import gdal
 from rios import applier
 from rios import rat
+from rios import calcstats
+from rios.fileinfo import ImageInfo
 from rios.cuiprogress import GDALProgressBar
 
 from rattree import RATTree
@@ -46,6 +48,11 @@ def get_cmdargs():
     parser.add_argument("-o", "--output", help="name of output KEA file")
     parser.add_argument("-f", "--format", default=DFLT_OUTPUT_DRIVER, 
             help="name of output GDAL format")
+    parser.add_argument("-g", "--gdalstats", default=False,
+            action="store_true",
+            help="Use GDAL to calculate Histogram and statistics. " +
+                "Default is to use histogram from the RAT and estimate " +
+                "statistics from that.")
     
     args = parser.parse_args()
     if args.inputs is None or args.output is None:
@@ -53,6 +60,45 @@ def get_cmdargs():
         sys.exit()
         
     return args
+    
+def estimateStatsFromHisto(ds, hist):
+    """
+    As a shortcut to calculating stats with GDAL, use the histogram 
+    that we already have from calculating the RAT and calc the stats
+    from that. 
+    """
+    # https://stackoverflow.com/questions/47269390/numpy-how-to-find-first-non-zero-value-in-every-column-of-a-numpy-array
+    mask = hist > 0
+    nVals = hist.sum()
+    minVal = mask.argmax()
+    maxVal = hist.shape[0] - numpy.flip(mask).argmax() - 1
+    
+    values = numpy.arange(hist.shape[0])
+    
+    meanVal = (values * hist).sum() / nVals
+    
+    stdDevVal = (hist * numpy.power(values - meanVal, 2)).sum() / nVals
+    stdDevVal = numpy.sqrt(stdDevVal)
+    
+    modeVal = numpy.argmax(hist)
+    # estimate the median - bin with the middle number
+    middlenum = hist.sum() / 2
+    gtmiddle = hist.cumsum() >= middlenum
+    medianVal = gtmiddle.nonzero()[0][0]
+    
+    band = ds.GetRasterBand(1)
+    band.SetMetadataItem("STATISTICS_MINIMUM", repr(minVal))
+    band.SetMetadataItem("STATISTICS_MAXIMUM", repr(maxVal))
+    band.SetMetadataItem("STATISTICS_MEAN", repr(meanVal))
+    band.SetMetadataItem("STATISTICS_STDDEV", repr(stdDevVal))
+    band.SetMetadataItem("STATISTICS_MODE", repr(modeVal))
+    band.SetMetadataItem("STATISTICS_MEDIAN", repr(medianVal))
+    band.SetMetadataItem("STATISTICS_SKIPFACTORX", "1")
+    band.SetMetadataItem("STATISTICS_SKIPFACTORY", "1")
+    band.SetMetadataItem("STATISTICS_HISTOBINFUNCTION", "direct")
+    band.SetMetadataItem("STATISTICS_HISTOMIN", "0")
+    band.SetMetadataItem("STATISTICS_HISTOMAX", repr(maxVal))
+    band.SetMetadataItem("STATISTICS_HISTONUMBINS", repr(len(hist)))
     
 def readCSV(inputs):
     """
@@ -78,7 +124,7 @@ def buildImageAndTree(info, inputs, outputs, otherArgs):
     # first stack the inputs into one array
     block = numpy.vstack(inputs.inputs)
     
-    outputs.output = otherArgs.tree.addfromRIOS(block)
+    outputs.output = otherArgs.tree.addfromRIOS(block, otherArgs.nodatas)
     
     
 def main(cmdargs):
@@ -87,8 +133,20 @@ def main(cmdargs):
     """
     filenames, columnNames = readCSV(cmdargs.inputs)
     
+    nodatas = []
+    for fname in filenames:
+        info = ImageInfo(fname)
+        if len(info.nodataval) > 1:
+            raise SystemExit("Inputs need to be single band")
+            
+        val = info.nodataval[0]
+        if val is None:
+            raise SystemExit("No data values must be set on inputs")
+        nodatas.append(val)
+    
     otherargs = applier.OtherInputs()
     otherargs.tree = RATTree()
+    otherargs.nodatas = numpy.array(nodatas)
     
     inputs = applier.FilenameAssociations()
     inputs.inputs = filenames
@@ -101,6 +159,10 @@ def main(cmdargs):
     controls.setProgress(progress)
     controls.setThematic(True)
     controls.setOutputDriverName(cmdargs.format)
+    # we calculate the stats from the Histogram
+    # (which we create)
+    # pyramid layers are calculated separately
+    controls.setCalcStats(cmdargs.gdalstats)
     
     applier.apply(buildImageAndTree, inputs, outputs, otherargs, 
                         controls=controls)
@@ -112,10 +174,24 @@ def main(cmdargs):
     print()
     print('writing rat')
     ds = gdal.Open(cmdargs.output, gdal.GA_Update)
+
+    if not cmdargs.gdalstats:
+        # now histogram
+        hist = otherargs.tree.dumphist()
+        rat.writeColumn(ds, 'Histogram', hist, colUsage=gdal.GFU_PixelCount,
+                                colType=gdal.GFT_Integer)
+
+        estimateStatsFromHisto(ds, hist)
+        
+        calcstats.addPyramid(ds, progress)
+        
+    # else stats/pyramids are handled by RIOS calcstats
+
+    # now all the rat columns
     for idx, colName in enumerate(columnNames):
         rat.writeColumn(ds, colName, outputRAT[..., idx], 
                             colType=gdal.GFT_Integer)
-    
+                            
     ds.FlushCache()
 
 if __name__ == '__main__':
