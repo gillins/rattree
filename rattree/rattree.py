@@ -325,7 +325,8 @@ class RATTree(object):
                     output[0, y, x] = self.adddata(data)
                 else:
                     output[0, y, x] = 0
-                    self.histo[0] += 1
+                    # don't need to update histogram in this case as 
+                    # we are ignoring zeros
                 
         return output
         
@@ -350,8 +351,6 @@ class RATTree(object):
         Return the Histogram built from the tree.
         Truncates to the used space of the histogram
         """
-        # we ignore the first value (which is the nodata)
-        self.histo[0] = 0
         return self.histo[:self.currow]
 
 @njit
