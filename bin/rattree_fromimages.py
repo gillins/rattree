@@ -201,8 +201,20 @@ def main(cmdargs):
     
     # colour table if requested
     if not cmdargs.nocolourtable:
-        ct = rat.genColorTable_random(outputRAT.shape[0])
-        rat.setColorTable(ds, ct)
+        # NOTE: rios.rat colour table stuff uses the old RAT API
+        # so let's use the faster one
+        colNames = ["Blue", "Green", "Red"]
+        colUsages = [gdal.GFU_Blue, gdal.GFU_Green, gdal.GFU_Red]
+        numEntries = outputRAT.shape[0]
+        for band in range(3):
+            data = numpy.random.randint(0, 255, size=numEntries)
+            rat.writeColumn(ds, colNames[band], data, colUsage=colUsages[band],
+                    colType=gdal.GFT_Integer)
+            
+        # alpha 
+        alpha = numpy.full((numEntries,), 255, dtype=numpy.uint8)
+        rat.writeColumn(ds, 'Alpha', alpha, colUsage=gdal.GFU_Alpha,
+                    colType=gdal.GFT_Integer)
 
     # now all the rat columns
     for idx, colName in enumerate(columnNames):
