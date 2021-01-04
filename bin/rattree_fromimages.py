@@ -208,11 +208,13 @@ def main(cmdargs):
         numEntries = outputRAT.shape[0]
         for band in range(3):
             data = numpy.random.randint(0, 255, size=numEntries)
+            data[0] = 0
             rat.writeColumn(ds, colNames[band], data, colUsage=colUsages[band],
                     colType=gdal.GFT_Integer)
             
         # alpha 
         alpha = numpy.full((numEntries,), 255, dtype=numpy.uint8)
+        alpha[0] = 0
         rat.writeColumn(ds, 'Alpha', alpha, colUsage=gdal.GFU_Alpha,
                     colType=gdal.GFT_Integer)
 
