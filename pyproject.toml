@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rattree"
+dynamic = ["version"]
+authors = [
+  {name = "Sam Gillingham"}
+]
+description = "Code for speeding up Raster Attribute Table creation"
+readme = "README.md"
+license = {file = "LICENSE.txt"}
+
+[project.scripts]
+rattree_fromimages = "rattree.fromimages:main"
+
+[project.urls]
+Repository = "https://github.com/gillins/rattree"
+Homepage = "https://github.com/gillins/rattree"
+
+[tool.setuptools.dynamic]
+version = {attr = "rattree.__version__"}
