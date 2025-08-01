@@ -19,3 +19,5 @@ Main file of this module. Make RATTree available at the top level.
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from .rattree import RATTree
+
+__version__ = '0.1'
